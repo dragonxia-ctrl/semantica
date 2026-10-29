@@ -2,6 +2,7 @@
 Import and export routes for graph datasets.
 """
 
+import asyncio
 import csv
 import io
 import json
@@ -13,8 +14,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 
 from ..dependencies import get_session
-from ..schemas import DistanceExportRequest, ExportRequest, ImportResponse
-from ..session import GraphSession
+from ..schemas import DistanceExportRequest, ExportRequest, ImportResponse, PersistResponse
+from ..session import GraphSession, SessionNotPersistableError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Export / Import"])
@@ -262,6 +263,30 @@ async def import_file(
         status_code=422,
         detail=f"Unsupported file type '{_os.path.splitext(filename)[1]}'. Allowed: {sorted(_ALLOWED_IMPORT_EXTENSIONS)}",
     )
+
+
+@router.post("/api/persist", response_model=PersistResponse)
+async def persist_session(session: GraphSession = Depends(get_session)):
+    """Write the session (merges, imports, annotations) back to its source file.
+
+    The target is always the file the Explorer was started with; the request
+    carries no path, so it cannot be pointed anywhere else. Use ``/api/export``
+    to download a copy instead.
+    """
+    try:
+        summary = await asyncio.to_thread(session.persist)
+    except SessionNotPersistableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc} Start the Explorer with --graph <file>, or use /api/export.",
+        ) from exc
+    except OSError as exc:
+        logger.exception("Persisting the Explorer session failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not write the session to disk. See the server log.",
+        ) from exc
+    return PersistResponse(status="success", **summary)
 
 
 #: Aliases kept consistent with `mcp/tools/export.py::_FORMAT_ALIASES` and

@@ -5,6 +5,8 @@ Semantica Explorer session helpers.
 import base64
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 import uuid
@@ -36,6 +38,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+#: Annotations are Explorer-only data that the ContextGraph file format has no
+#: place for, so they are persisted next to the graph file in this sidecar.
+_ANNOTATIONS_SUFFIX = ".annotations.json"
+
+
+class SessionNotPersistableError(RuntimeError):
+    """The session was not loaded from a file, so there is nowhere to save to."""
+
 
 class GraphSession:
     """Thread-safe session wrapper around a loaded ``ContextGraph``."""
@@ -51,6 +61,9 @@ class GraphSession:
         self._search_index = GraphSearchIndex()
 
         self.annotations: Dict[str, Dict[str, Any]] = {}
+
+        # Set by ``from_file``; the file ``persist()`` writes back to.
+        self.source_path: Optional[str] = None
 
         self._centrality: Any = None
         self._community: Any = None
@@ -71,7 +84,92 @@ class GraphSession:
     def from_file(cls, path: str) -> "GraphSession":
         graph = ContextGraph()
         graph.load_from_file(path)
-        return cls(graph)
+        session = cls(graph)
+        session.source_path = os.path.abspath(path)
+        session._load_annotations_sidecar()
+        return session
+
+    def _annotations_path(self) -> Optional[str]:
+        if not self.source_path:
+            return None
+        return self.source_path + _ANNOTATIONS_SUFFIX
+
+    def _load_annotations_sidecar(self) -> None:
+        """Restore annotations saved by :meth:`persist`; never fatal."""
+        sidecar = self._annotations_path()
+        if not sidecar or not os.path.isfile(sidecar):
+            return
+        try:
+            with open(sidecar, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError) as exc:
+            logger.warning("Ignoring unreadable annotations file %s: %s", sidecar, exc)
+            return
+        items = data.get("annotations") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            logger.warning("Ignoring annotations file %s: unexpected layout", sidecar)
+            return
+        with self._lock:
+            for item in items:
+                if isinstance(item, dict) and item.get("annotation_id") and item.get("node_id"):
+                    self.annotations[str(item["annotation_id"])] = item
+
+    def persist(self) -> Dict[str, Any]:
+        """Write the session back to the file it was loaded from.
+
+        Node merges and every other graph edit live only in memory until this
+        is called, so a restart used to discard them (#1817). The graph is
+        written with ``ContextGraph.save_to_file`` (atomic temp-file + rename);
+        annotations go to a ``<file>.annotations.json`` sidecar, which is
+        removed again once the last annotation is deleted so a deleted
+        annotation cannot reappear on the next start.
+
+        The file is rewritten in the canonical ``ContextGraph`` layout, so a
+        source that was loaded from another accepted layout (a bare array,
+        ``entities``/``relationships``) is converted on the first persist.
+
+        Raises:
+            SessionNotPersistableError: the session has no source file.
+            OSError: a file could not be written. Each file is replaced
+                atomically, so a failed write never leaves one half-written.
+        """
+        if not self.source_path:
+            raise SessionNotPersistableError(
+                "Session was not loaded from a file, so there is nowhere to persist to."
+            )
+        with self._lock:
+            self.graph.save_to_file(self.source_path)
+            annotations = list(self.annotations.values())
+            sidecar = self._annotations_path()
+            if annotations:
+                self._write_json_atomically(
+                    sidecar, {"version": 1, "annotations": annotations}
+                )
+            elif sidecar and os.path.exists(sidecar):
+                os.unlink(sidecar)
+            return {
+                "file": os.path.basename(self.source_path),
+                "nodes": len(self.graph.nodes),
+                "edges": len(self.graph.edges),
+                "annotations": len(annotations),
+            }
+
+    @staticmethod
+    def _write_json_atomically(path: str, payload: Dict[str, Any]) -> None:
+        directory = os.path.dirname(path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".annotations_tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False, default=str)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     @staticmethod
     def _encode_cursor(value: str) -> str:

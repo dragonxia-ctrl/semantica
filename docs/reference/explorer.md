@@ -83,6 +83,9 @@ The browser opens automatically at `http://127.0.0.1:8000`. The interactive API 
     # Make the session match the file: nodes/edges no longer in it are removed
     curl -X POST "http://localhost:8000/api/import?mode=replace" \
       -F "file=@updated_graph.json"
+
+    # Save merges, imports and annotations back to the file Explorer was started with
+    curl -X POST http://localhost:8000/api/persist
     ```
   </Step>
   <Step title="Use via Python module">
@@ -314,6 +317,7 @@ Full interactive docs at `http://localhost:8000/docs`. All endpoints accept and 
     | `/api/export` | `POST` | Export graph as JSON or CSV: body: `{format, node_ids}` |
     | `/api/export/distance-enriched` | `POST` | Export pairwise distances as CSV or JSONL |
     | `/api/import` | `POST` | Import nodes/edges from `.json` or `.csv` file (max 50 MB). `?mode=add` (default) only adds; `?mode=replace` rebuilds the graph from the file and reports `nodes_removed`/`edges_removed` |
+    | `/api/persist` | `POST` | Write the session (merges, imports, annotations) back to the file Explorer was started with. Annotations go to `<file>.annotations.json` |
 
   </Accordion>
   <Accordion title="Health & Info">
@@ -413,7 +417,7 @@ Path finding requires the `semantica[kg]` extras. Install with `pip install "sem
 Semantic neighborhood requires node embeddings stored in node properties (keys `embedding`, `vector`, or `node2vec_embedding`). Graphs without embeddings return 503.
 
 **Session state lost after restart**
-Session state is in-memory only. Use `POST /api/export` to save a JSON snapshot before shutting down.
+Session state is in-memory until you save it. `POST /api/persist` writes merges, imports and annotations back to the graph file Explorer was started with (annotations go to a `<file>.annotations.json` sidecar next to it), so the next start picks them up. Nothing is written automatically. Use `POST /api/export` instead to download a snapshot without touching the source file.
 
 - [Context](/reference/context) — Build and save the ContextGraph that Explorer loads.
 - [Ontology](/reference/ontology) — Programmatic ontology management and SHACL generation.

@@ -340,6 +340,14 @@ class ImportResponse(BaseModel):
     annotations_removed: int = 0
 
 
+class PersistResponse(BaseModel):
+    status: str = "success"
+    file: str
+    nodes: int
+    edges: int
+    annotations: int
+
+
 class AnnotationCreate(BaseModel):
     node_id: str
     content: str

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Explorer `POST /api/persist`: write merges, imports and annotations back to the graph file** (part of #1817)
+  - Node merges, imports and annotations made in the Explorer lived only in the in-memory `GraphSession`, so a page reload or restart discarded the curation work, and the only way out was a manual export. `POST /api/persist` now saves the session to the file the Explorer was started with (`--graph`) using the existing atomic `ContextGraph.save_to_file`
+  - The request carries no path, so it can only write to the configured file, and the response reports the file name rather than the server's directory layout. A session that was not loaded from a file answers 409 and points at `/api/export`
+  - Annotations have no place in the graph file format, so they are saved to a `<file>.annotations.json` sidecar that `GraphSession.from_file` reads back on the next start; the sidecar is removed when the last annotation is deleted, and an unreadable one is ignored rather than blocking startup
+  - Nothing is written implicitly: edits stay in memory until `/api/persist` is called. The file is rewritten in the canonical `ContextGraph` layout, so a source loaded from another accepted layout is converted on the first persist
+
 - `DecisionRecorder` and `AgentContext` gain opt-in `evaluators`/`eval_config` constructor parameters that run `semantica.evals` evaluators (e.g. `decision_scores`) automatically during `record_decision()`, storing `eval_score`/`eval_passed`/`eval_details` in `Decision.metadata`. Fully backward-compatible: omitting `evaluators` leaves recording behavior unchanged. Evaluator failures are logged and never block decision persistence. Both the `graph_store` and `context_graph` `AgentContext` decision backends run the hook.
 - **Trust-tier grading of retrieved context** (#1703, phase 2 of #1557) by @pkupt
   - `ContextRetriever` now grades every retrieved fact on evidence quality and records the tier in `RetrievedContext.metadata["trust_tier"]` (`quarantine` / `bronze` / `silver` / `gold`). Tiers are computed at query time from signals already present in the result — graph node confidence and, when a `provenance_manager` is configured, the number of distinct sources from `get_all_sources` — and are never persisted, so grades stay current as source sets change
